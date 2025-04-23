@@ -45,12 +45,12 @@ class Terminal:
         if not seq.startswith(b"\033["):
             b']'
             return None, [], b'', False
-        saw_question = False
+        extra = b''
         nums = []
-        if seq[2:3] == b'?':
-            saw_question = True
+        if seq[2:3] in b'?<>=!':
+            extra = seq[2:3]
 
-        p = 2 + saw_question
+        p = 2 + len(extra)
         while p < len(seq):
             v = 0
             digit = False
@@ -67,7 +67,7 @@ class Terminal:
                 p += 1
                 continue
             if p < len(seq):
-                return seq[p:p+1], nums, seq[p + 1:], saw_question
+                return seq[p:p+1], nums, seq[p + 1:], extra
             break
         return None, [], b'', False
 
@@ -93,7 +93,8 @@ class Terminal:
             self._cursor_c = max(self._cursor_c - (args + [1])[0], 0)
             self.move_cursor()
         elif spec == b'H':
-            self.cursor = (args + [0, 0])[:2]
+            row_1, col_1 = (args + [0, 0])[:2]
+            self.cursor = (row_1 - 1, col_1 - 1)
         elif spec == b'h' and args[0:1] == [1049]:
             self.normal_screen_contents = self.screen
             self.normal_screen_cursor = self.cursor
@@ -104,9 +105,9 @@ class Terminal:
             self.passthrough(spec, args, private)
         elif spec == b'J':
             # if args and args[0] == 2: # this is right and need update
-            self.cursor = (0, 0)
             self.screen = [b' '] * (self.ncols * self.nrows)
             self.redraw()
+            self.cursor = (0, 0)
         elif spec == b'K':
             if args and args[0] == 1:  # erase to left
                 start = self._cursor_r * self.ncols
@@ -133,8 +134,9 @@ class Terminal:
             self.passthrough(spec, args, private)
         elif spec == b'm':  # Color
             self.passthrough(spec, args, private)
-        elif spec == b'n' and args and args[0] == 6:
+        elif spec == b'n' and args and args[0] == 6:  # Cursor position
             a = b"\033[%d;%dR" % (self._cursor_r + 1, self._cursor_c + 1)
+            print("logging response:", a, file=log, flush=True)
             os.write(self.pty, a)
         elif spec == b'>' or spec == b'=':  # no exactly sure here. numpad?
             self.passthrough(spec, args, private)
@@ -247,7 +249,7 @@ class Terminal:
                                 print("Not handling:", c[:5], file=log)
                             print("logging:", c[:1], file=log, flush=True)
                             self.write_out(c[:1])
-                        self.tty.flush()
+                    self.tty.flush()
                 if row == stdin:
                     os.set_blocking(stdin.fileno(), False)
                     c = stdin.read(1024)
@@ -280,15 +282,16 @@ def main():
         print(8 * 'x' + "|" + ' ' * 100 + "|")
     print(8*'x' + "+" + '-' * 100 + "+", flush=True)
     t = Terminal(sys.stdout.buffer, 10, 10, 25, 100)
-    old_settings = termios.tcgetattr(0)
-    tty.setraw(sys.stdin.fileno())
+    old_settings = termios.tcgetattr(1)
+    tty.setraw(0)
     try:
         t.start()
     finally:
+        sys.stdout.write('\x1b[r')
         sys.stdout.write('\x1b[?1049l')
         sys.stdout.flush()
-        tty.setcbreak(sys.stdin.fileno())
-        termios.tcsetattr(0, termios.TCSADRAIN, old_settings)
+        termios.tcsetattr(1, termios.TCSADRAIN, old_settings)
+        tty.setcbreak(0)
 
     return 0
 
