@@ -5,6 +5,9 @@ import sys
 import os
 import select
 import tty
+import fcntl
+import termios
+import struct
 
 
 class Terminal:
@@ -26,6 +29,10 @@ class Terminal:
     @cursor.setter
     def cursor(self, cursor):
         self._cursor_r, self._cursor_c = cursor
+
+    @property
+    def term_cursor(self):
+        return (self._cursor_r + self.row, self._cursor_c + self.col)
 
     @staticmethod
     def parse_cs(seq):
@@ -56,44 +63,57 @@ class Terminal:
             a = b"\033[%d;%dR" % self.cursor
             b']'
             os.write(self.pty, a)
+        elif spec == b'H' and len(args) == 2:
+            r, c = args
+            val = b'\x1b[%d;%dH' % (r + self.row, c + self.col)
+            b']'
+            self.tty.write(val)
+            self.tty.flush()
         else:
             args = b';'.join(str(a).encode() for a in args)
             val = b'\033[' + args + spec
             b']'
-            # print("\nNot Handling:", val)
             self.tty.write(val)
             self.tty.flush()
-            # os.write(self.pty, val)
 
     def inc_row(self):
         if self._cursor_r < self.nrows:
             self._cursor_r += 1
 
     def start(self):
-        self.child_pid, self.pty = pty.fork()
+        self.pty, child = pty.openpty()
+        print("hi")
+        self.child_pid = os.fork()
+        if self.child_pid == 0:
+            os.dup2(child, 0)
+            os.dup2(child, 1)
+            os.dup2(child, 2)
+            winsize = struct.pack("HH", self.nrows, self.ncols)
+            fcntl.ioctl(self.pty, termios.TIOCSWINSZ, winsize)
+            os.close(self.pty)
+            os.close(child)
+            os.execlp("/bin/bash", "/bin/bash", "-i")
+            sys.exit(1)
+        ipt = open(sys.stdin.fileno(), "rb")
+        tty.setraw(ipt.fileno())
+        os.set_blocking(ipt.fileno(), False)
         try:
-            return self._start()
+            return self._start(ipt)
         finally:
             os.close(self.pty)
 
-    def _start(self):
-        self.child_pid, self.pty = pty.fork()
-        if self.child_pid == 0:
-            os.execlp("/bin/bash", "/bin/bash", "-i")
-            sys.exit(1)
-
-        ipt = open(sys.stdin.fileno(), "r+b")
-        tty.setraw(ipt.fileno())
-        ipt.flush()
-        os.set_blocking(ipt.fileno(), False)
-
-        while True:
+    def _start(self, ipt):
+        while check_pid(self.child_pid):
             read, _, _ = select.select([self.pty, ipt], [], [])
             for row in read:
                 if row == self.pty:
                     blocks = []
                     while select.select([self.pty], [], [], 0)[0]:
-                        blocks.append(os.read(self.pty, 1024))
+                        try:
+                            blocks.append(os.read(self.pty, 1024))
+                        except IOError:
+                            break
+
                     chs = b''.join(blocks)
                     i = 0
                     while i < len(chs):
@@ -107,8 +127,13 @@ class Terminal:
                         elif c.startswith(b"\n"):
                             self._cursor_c = 0
                             self.inc_row()
+                            # self.tty.write(b'\x1b[%d;%dH' % self.term_cursor)
+                            continue
+
                         elif c.startswith(b"\r"):
                             self._cursor_c = 0
+                            # self.tty.write(b'\x1b[%d;%dH' % self.term_cursor)
+                            continue
                         else:
                             self._cursor_c += 1
                             if self._cursor_c >= self.ncols:
@@ -123,8 +148,36 @@ class Terminal:
         os.wait()
 
 
+def check_pid(pid):
+    """ Check For the existence of a unix pid. """
+    try:
+        os.kill(pid, 0)
+    except OSError:
+        return False
+    else:
+        return True
+
+
+def get_terminal_size(fd):
+    try:
+        rows, columns = os.get_terminal_size()
+        return rows, columns
+    except OSError:
+        return 80, 25
+
+    try:
+        s = struct.pack("HHHH", 0, 0, 0, 0)
+        res = fcntl.ioctl(fd, termios.TIOCGWINSZ, s)
+        rows, columns, _, _ = struct.unpack("HHHH", res)
+        return columns, rows
+    except OSError:
+        return 80, 25
+
+
 def main():
-    t = Terminal(open(sys.stdout.fileno(), "wb"), 1, 1, 100, 100)
+    rows, cols = get_terminal_size(sys.stdout.fileno())
+    print(rows, cols)
+    t = Terminal(open(sys.stdout.fileno(), "wb"), 10, 10, rows - 20, cols - 20)
     t.start()
     return 0
 
