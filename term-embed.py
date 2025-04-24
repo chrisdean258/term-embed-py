@@ -26,6 +26,7 @@ class Terminal:
         self.screen = [b' '] * (nrows * ncols)
         self.normal_screen_contents = None
         self.normal_screen_cursor = None
+        self.scroll_region = (1, nrows)
 
     @property
     def cursor(self):
@@ -109,18 +110,17 @@ class Terminal:
             self.redraw()
             self.cursor = (0, 0)
         elif spec == b'K':
+            cursor = self.cursor
             if args and args[0] == 1:  # erase to left
                 start = self._cursor_r * self.ncols
                 end = self._cursor_r * self.ncols + self._cursor_c
-                cursor = self.cursor
-            elif args and args[0] == 2:  # erasse full line
+            elif args and args[0] == 2:  # erase full line
                 start = self._cursor_r * self.ncols
                 end = start + self.ncols
                 cursor = (self._cursor_r, 0)
             else:  # Erase to right
                 start = self._cursor_r * self.ncols + self._cursor_c
                 end = (self._cursor_r + 1) * self.ncols
-                cursor = self.cursor
             self.screen[start:end] = [b' '] * (end - start)
             self.tty.write(b' ' * (end - start))
             self.cursor = cursor
@@ -130,6 +130,13 @@ class Terminal:
             self.normal_screen_contents = None
             self.cursor = self.normal_screen_cursor
             self.redraw()
+        elif spec == b'L':
+            nlines = (args + [1])[0]
+            start, end = self.scroll_region
+            self.scroll_region = 0, self._cursor_r
+            self.scroll_screen(-nlines)
+            self.scroll_region = start, end
+
         elif spec == b'l':
             self.passthrough(spec, args, private)
         elif spec == b'm':  # Color
@@ -138,6 +145,15 @@ class Terminal:
             a = b"\033[%d;%dR" % (self._cursor_r + 1, self._cursor_c + 1)
             print("logging response:", a, file=log, flush=True)
             os.write(self.pty, a)
+        elif spec == b'r':
+            bottom, top = (args or [1, self.nlines])[:2]
+            self.scroll_region = (bottom, top)
+        elif spec == b'S':
+            nlines = (args or [1])[0]
+            self.scroll_screen(-nlines)
+        elif spec == b'T':
+            nlines = (args or [1])[0]
+            self.scroll_screen(nlines)
         elif spec == b'>' or spec == b'=':  # no exactly sure here. numpad?
             self.passthrough(spec, args, private)
         else:
@@ -146,13 +162,15 @@ class Terminal:
             val = b'\033[' + (b'?' if private else b'') + args + spec
             print("skipping", val, file=log, flush=True)
 
-    def redraw(self):
+    def redraw(self, first=0, last=None):
+        if last is None:
+            last = self.ncols
         HIDE_CURSOR = b'\x1b[?25l'
         SHOW_CURSOR = b'\x1b[?12l\x1b[?25h'
         cursor = self.cursor
         ncols = self.ncols
         self.tty.write(HIDE_CURSOR)
-        for i in range(len(self.screen) // ncols):
+        for i in range(first, last - 1):
             self.cursor = (i, 0)
             content = b''.join(self.screen[ncols * i:ncols * (i + 1)])
             self.tty.write(content)
@@ -160,10 +178,23 @@ class Terminal:
         self.tty.write(SHOW_CURSOR)
         self.tty.flush()
 
-    def scroll_screen(self):
-        self.cursor = (self.nrows - 1, 0)
-        self.screen = self.screen[self.ncols:] + [b' '] * self.ncols
+    def scroll_screen(self, nlines=1):
+        assert len(self.screen) == self.ncols * self.nrows
+        cursor = self.cursor
+        first_1, last_1 = self.scroll_region
+        first, last = first_1 - 1, last_1 - 1
+        region = self.screen[self.ncols * first:self.ncols * (last)]
+        size = len(region)
+        buff = [b' '] * (abs(nlines) * self.ncols)
+        if nlines > 0:
+            region = (region + buff)[-size:]
+        elif nlines < 0:
+            region = (buff + region)[:size]
+        self.screen[self.ncols * first:self.ncols * (last)] = region
         self.redraw()
+        self.cursor = cursor
+        assert len(self.screen) == self.ncols * \
+            self.nrows, f"{len(self.screen)} {nlines}"
 
     def write_out(self, char):
         max_size = self.nrows * self.ncols
@@ -254,6 +285,7 @@ class Terminal:
                     os.set_blocking(stdin.fileno(), False)
                     c = stdin.read(1024)
                     os.set_blocking(stdin.fileno(), True)
+                    print("input log:", c, file=log, flush=True)
                     os.write(self.pty, c)
 
 
