@@ -8,8 +8,22 @@ import tty
 import termios
 import struct
 import fcntl
+import re
 
 log = open("log", "w")
+
+
+def get_cursor_position():
+    sys.stdout.write("\x1b[6n")
+    sys.stdout.flush()
+    response = ""
+    while True:
+        char = sys.stdin.read(1)
+        response += char
+        if char == "R":
+            break
+    match = re.match(r".*\[(\d+);(\d+)R", response)
+    return map(int, match.groups())
 
 
 class Terminal:
@@ -43,8 +57,9 @@ class Terminal:
 
     @staticmethod
     def parse_cs(seq):
-        if not seq.startswith(b"\033["):
-            b']'
+        if seq.startswith(b"\033("):
+            return None, [], seq[3:], False
+        elif not seq.startswith(b"\033["):
             return None, [], b'', False
         extra = b''
         nums = []
@@ -131,18 +146,21 @@ class Terminal:
             self.cursor = self.normal_screen_cursor
             self.redraw()
         elif spec == b'L':
-            nlines = (args + [1])[0]
-            start, end = self.scroll_region
-            self.scroll_region = 0, self._cursor_r
-            self.scroll_screen(-nlines)
-            self.scroll_region = start, end
+            pass
+            # nlines = (args + [1])[0]
+            # start, end = self.scroll_region
+            # self.scroll_region = 0, self._cursor_r
+            # self.scroll_screen(-nlines)
+            # self.scroll_region = start, end
 
         elif spec == b'l':
             self.passthrough(spec, args, private)
         elif spec == b'm':  # Color
             self.passthrough(spec, args, private)
         elif spec == b'n' and args and args[0] == 6:  # Cursor position
-            a = b"\033[%d;%dR" % (self._cursor_r + 1, self._cursor_c + 1)
+            r, c = get_cursor_position()
+            self._cursor_r, self._cursor_c = r - 1, c - 1
+            a = b"\033[%d;%dR" % (r - self.row, c - self.col)
             print("logging response:", a, file=log, flush=True)
             os.write(self.pty, a)
         elif spec == b'r':
@@ -257,6 +275,9 @@ class Terminal:
                             if control:
                                 chs, i = rest, 0
                                 self.handle_cs(control, args, private)
+                                continue
+                            elif rest:
+                                chs, i = rest, 0
                                 continue
                         elif c.startswith(b"\n"):
                             self._cursor_c = 0
