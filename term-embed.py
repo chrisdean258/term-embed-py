@@ -146,12 +146,11 @@ class Terminal:
             self.cursor = self.normal_screen_cursor
             self.redraw()
         elif spec == b'L':
-            pass
-            # nlines = (args + [1])[0]
-            # start, end = self.scroll_region
-            # self.scroll_region = 0, self._cursor_r
-            # self.scroll_screen(-nlines)
-            # self.scroll_region = start, end
+            nlines = (args + [1])[0]
+            start, end = self.scroll_region
+            self.scroll_region = self._cursor_r + 1, end
+            self.scroll_screen(nlines)
+            self.scroll_region = start, end
 
         elif spec == b'l':
             self.passthrough(spec, args, private)
@@ -160,7 +159,7 @@ class Terminal:
         elif spec == b'n' and args and args[0] == 6:  # Cursor position
             r, c = get_cursor_position()
             self._cursor_r, self._cursor_c = r - 1, c - 1
-            a = b"\033[%d;%dR" % (r - self.row, c - self.col)
+            a = b"\033[%d;%dR" % (r - self.row + 1, c - self.col + 1)
             print("logging response:", a, file=log, flush=True)
             os.write(self.pty, a)
         elif spec == b'r':
@@ -215,6 +214,7 @@ class Terminal:
             self.nrows, f"{len(self.screen)} {nlines}"
 
     def write_out(self, char):
+        print("logging:", char, file=log, flush=True)
         max_size = self.nrows * self.ncols
         idx = self._cursor_r * self.ncols + self._cursor_c
         if idx >= max_size:
@@ -294,13 +294,13 @@ class Terminal:
                             self.tty.flush()
                             continue
                         else:
-                            try:
-                                if not c[:1].decode().isprintable():
-                                    print("Not handling:", c[:5], file=log)
-                            except Exception:
-                                print("Not handling:", c[:5], file=log)
-                            print("logging:", c[:1], file=log, flush=True)
-                            self.write_out(c[:1])
+                            ch, ll = get_printable_char(c)
+                            if ch and ll:
+                                self.write_out(c[:ll])
+                                i += ll - 1
+                            else:
+                                self.write_out(c[:1])
+
                     self.tty.flush()
                 if row == stdin:
                     os.set_blocking(stdin.fileno(), False)
@@ -308,6 +308,15 @@ class Terminal:
                     os.set_blocking(stdin.fileno(), True)
                     print("input log:", c, file=log, flush=True)
                     os.write(self.pty, c)
+
+
+def get_printable_char(bts):
+    for i in range(1, 4):
+        try:
+            return bts[:i].decode(), i
+        except UnicodeDecodeError:
+            continue
+    return None, None
 
 
 def get_terminal_size(fd):
